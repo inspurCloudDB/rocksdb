@@ -195,6 +195,17 @@ endif
 $(warning Warning: Compiling in debug mode. Don't use the resulting binary in production)
 endif
 
+# `USE_LTO=1` enables link-time optimizations. Among other things, this enables
+# more devirtualization opportunities and inlining across translation units.
+# This can save significant overhead introduced by RocksDB's pluggable
+# interfaces/internal abstractions, like in the iterator hierarchy. It works
+# better when combined with profile-guided optimizations (not currently
+# supported natively in Makefile).
+ifeq ($(USE_LTO), 1)
+	CXXFLAGS += -flto
+	LDFLAGS += -flto -fuse-linker-plugin
+endif
+
 #-----------------------------------------------
 include src.mk
 
@@ -363,8 +374,13 @@ ifndef USE_FOLLY_DISTRIBUTED_MUTEX
 	USE_FOLLY_DISTRIBUTED_MUTEX=0
 endif
 
-export GTEST_THROW_ON_FAILURE=1
-export GTEST_HAS_EXCEPTIONS=1
+ifndef GTEST_THROW_ON_FAILURE
+	export GTEST_THROW_ON_FAILURE=1
+endif
+ifndef GTEST_HAS_EXCEPTIONS
+	export GTEST_HAS_EXCEPTIONS=1
+endif
+
 GTEST_DIR = third-party/gtest-1.8.1/fused-src
 # AIX: pre-defined system headers are surrounded by an extern "C" block
 ifeq ($(PLATFORM), OS_AIX)
@@ -512,8 +528,10 @@ PARALLEL_TEST = \
 	db_merge_operator_test \
 	db_sst_test \
 	db_test \
+	db_test2 \
 	db_universal_compaction_test \
 	db_wal_test \
+	column_family_test \
 	external_sst_file_test \
 	import_column_family_test \
 	fault_injection_test \
@@ -554,9 +572,11 @@ ifdef ASSERT_STATUS_CHECKED
 		dbformat_test \
 		defer_test \
 		dynamic_bloom_test \
+		env_basic_test \
+		env_test \
+		env_logger_test \
 		event_logger_test \
 		file_indexer_test \
-		folly_synchronization_distributed_mutex_test \
 		hash_table_test \
 		hash_test \
 		heap_test \
@@ -578,12 +598,17 @@ ifdef ASSERT_STATUS_CHECKED
 		slice_test \
 		statistics_test \
 		thread_local_test \
+		env_timed_test \
 		timer_queue_test \
 		timer_test \
 		util_merge_operators_test \
 		version_edit_test \
 		work_queue_test \
 		write_controller_test \
+
+ifeq ($(USE_FOLLY_DISTRIBUTED_MUTEX),1)
+TESTS_PASSING_ASC += folly_synchronization_distributed_mutex_test
+endif
 
 	# Enable building all unit tests, but use check_some to run only tests
 	# known to pass ASC
@@ -853,7 +878,8 @@ check_0:
 	  | build_tools/gnu_parallel -j$(J) --plain --joblog=LOG $$eta --gnu  $(parallel_com) ; \
 	parallel_retcode=$$? ; \
 	awk '{ if ($$7 != 0 || $$8 != 0) { if ($$7 == "Exitval") { h = $$0; } else { if (!f) print h; print; f = 1 } } } END { if(f) exit 1; }' < LOG ; \
-	if [ $$parallel_retcode -ne 0 ] ; then exit 1 ; fi
+	awk_retcode=$$?; \
+	if [ $$parallel_retcode -ne 0 ] || [ $$awk_retcode -ne 0 ] ; then exit 1 ; fi
 
 valgrind-exclude-regexp = InlineSkipTest.ConcurrentInsert|TransactionStressTest.DeadlockStress|DBCompactionTest.SuggestCompactRangeNoTwoLevel0Compactions|BackupableDBTest.RateLimiting|DBTest.CloseSpeedup|DBTest.ThreadStatusFlush|DBTest.RateLimitingTest|DBTest.EncodeDecompressedBlockSizeTest|FaultInjectionTest.UninstalledCompaction|HarnessTest.Randomized|ExternalSSTFileTest.CompactDuringAddFileRandom|ExternalSSTFileTest.IngestFileWithGlobalSeqnoRandomized|MySQLStyleTransactionTest.TransactionStressTest
 
@@ -973,6 +999,14 @@ asan_crash_test: clean
 	COMPILE_WITH_ASAN=1 $(MAKE) crash_test
 	$(MAKE) clean
 
+whitebox_asan_crash_test: clean
+	COMPILE_WITH_ASAN=1 $(MAKE) whitebox_crash_test
+	$(MAKE) clean
+
+blackbox_asan_crash_test: clean
+	COMPILE_WITH_ASAN=1 $(MAKE) blackbox_crash_test
+	$(MAKE) clean
+
 asan_crash_test_with_atomic_flush: clean
 	COMPILE_WITH_ASAN=1 $(MAKE) crash_test_with_atomic_flush
 	$(MAKE) clean
@@ -991,6 +1025,14 @@ ubsan_check: clean
 
 ubsan_crash_test: clean
 	COMPILE_WITH_UBSAN=1 $(MAKE) crash_test
+	$(MAKE) clean
+
+whitebox_ubsan_crash_test: clean
+	COMPILE_WITH_UBSAN=1 $(MAKE) whitebox_crash_test
+	$(MAKE) clean
+
+blackbox_ubsan_crash_test: clean
+	COMPILE_WITH_UBSAN=1 $(MAKE) blackbox_crash_test
 	$(MAKE) clean
 
 ubsan_crash_test_with_atomic_flush: clean
